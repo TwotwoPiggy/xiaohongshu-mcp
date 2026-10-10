@@ -19,6 +19,15 @@ type Board struct {
 	NoteCount int    `json:"note_count"`
 }
 
+// BoardFeedsResponse 表示专辑中的笔记列表响应
+type BoardFeedsResponse struct {
+	BoardID       string `json:"board_id"`
+	BoardName     string `json:"board_name,omitempty"`
+	HasMore       bool   `json:"has_more"`
+	TotalReturned int    `json:"total_returned"`
+	Feeds         []Feed `json:"feeds"`
+}
+
 // BoardAction 负责专辑相关交互
 type BoardAction struct {
 	page *rod.Page
@@ -139,6 +148,188 @@ func (a *BoardAction) ListBoards(ctx context.Context, userID string) ([]Board, e
 
 	logrus.Infof("获取专辑列表成功，共 %d 个专辑", len(boards))
 	return boards, nil
+}
+
+// matchBoardByName 从专辑列表中按名称匹配专辑，支持忽略首尾空格和大小写，未找到时列出所有候选名称
+func matchBoardByName(boards []Board, name string) (*Board, error) {
+	trimmedName := strings.TrimSpace(name)
+	if trimmedName == "" {
+		return nil, fmt.Errorf("专辑名称不能为空")
+	}
+
+	var availableNames []string
+	for _, b := range boards {
+		availableNames = append(availableNames, b.Name)
+		if b.Name == trimmedName {
+			bCopy := b
+			return &bCopy, nil
+		}
+	}
+
+	for _, b := range boards {
+		if strings.EqualFold(b.Name, trimmedName) {
+			bCopy := b
+			return &bCopy, nil
+		}
+	}
+
+	return nil, fmt.Errorf("未找到名为 %q 的专辑，当前可用专辑有: [%s]", trimmedName, strings.Join(availableNames, ", "))
+}
+
+// ResolveBoard 根据 boardName 或 boardID 解析目标专辑。
+// 优先使用传入的 boardID；若 boardID 为空但提供了 boardName，自动查找当前用户的专辑列表并匹配。
+func (a *BoardAction) ResolveBoard(ctx context.Context, boardName, boardID string) (*Board, error) {
+	trimmedID := strings.TrimSpace(boardID)
+	trimmedName := strings.TrimSpace(boardName)
+
+	if trimmedID != "" {
+		return &Board{ID: trimmedID, Name: trimmedName}, nil
+	}
+	if trimmedName == "" {
+		return nil, fmt.Errorf("必须提供 board_name（专辑名称）或 board_id（专辑ID）")
+	}
+
+	boards, err := a.ListBoards(ctx, "")
+	if err != nil {
+		return nil, fmt.Errorf("获取专辑列表失败以解析专辑名称: %w", err)
+	}
+
+	return matchBoardByName(boards, trimmedName)
+}
+
+// GetBoardFeeds 获取专辑中的笔记列表。
+// limit > 0 时最多返回 limit 条，且达到数量时提前停止滚动；limit <= 0 时滚动加载全部。
+func (a *BoardAction) GetBoardFeeds(ctx context.Context, boardID string, limit int) (*BoardFeedsResponse, error) {
+	if boardID == "" {
+		return nil, fmt.Errorf("board_id 不能为空")
+	}
+
+	page := a.page.Context(ctx)
+	url := fmt.Sprintf("https://www.xiaohongshu.com/board/%s", boardID)
+	if err := gotoPage(page, url); err != nil {
+		return nil, err
+	}
+
+	const js = `(boardId) => {
+		const unwrap = (v) => (v && typeof v === 'object' && 'value' in v) ? v.value : v;
+		const b = window.__INITIAL_STATE__ && window.__INITIAL_STATE__.board;
+		if (!b) return "";
+		const map = unwrap(b.boardFeedsMap);
+		if (!map) return "";
+		const entry = unwrap(map[boardId]);
+		if (!entry) return "";
+
+		const rawNotes = unwrap(entry.notes) || [];
+		const normalized = rawNotes.map((n, idx) => {
+			const unwrappedN = unwrap(n);
+			if (!unwrappedN || typeof unwrappedN !== 'object') return null;
+
+			const id = unwrappedN.id || unwrappedN.noteId || unwrappedN.note_id || "";
+			const xsecToken = unwrappedN.xsecToken || unwrappedN.xsec_token || unwrappedN.xsec || "";
+			const card = unwrap(unwrappedN.noteCard) || unwrappedN;
+			const user = unwrap(card.user) || {};
+			const interact = unwrap(card.interactInfo) || {};
+			const cover = unwrap(card.cover) || {};
+
+			return {
+				id: id,
+				xsecToken: xsecToken,
+				modelType: unwrappedN.modelType || "note",
+				index: idx,
+				noteCard: {
+					type: card.type || "normal",
+					displayTitle: card.displayTitle || card.title || "",
+					user: {
+						userId: user.userId || user.user_id || "",
+						nickname: user.nickname || user.nickName || "",
+						avatar: user.avatar || ""
+					},
+					interactInfo: {
+						liked: !!interact.liked,
+						likedCount: String(interact.likedCount || interact.liked_count || "0"),
+						collected: !!interact.collected,
+						collectedCount: String(interact.collectedCount || interact.collected_count || "0"),
+						commentCount: String(interact.commentCount || interact.comment_count || "0"),
+						sharedCount: String(interact.sharedCount || interact.shared_count || "0")
+					},
+					cover: {
+						url: cover.url || cover.urlDefault || cover.urlPre || "",
+						urlDefault: cover.urlDefault || cover.url || "",
+						urlPre: cover.urlPre || "",
+						width: cover.width || 0,
+						height: cover.height || 0
+					}
+				}
+			};
+		}).filter(Boolean);
+
+		return JSON.stringify({
+			hasMore: !!entry.hasMore,
+			notes: normalized
+		});
+	}`
+
+	var lastFeeds struct {
+		HasMore bool   `json:"hasMore"`
+		Notes   []Feed `json:"notes"`
+	}
+
+	deadline := time.Now().Add(30 * time.Second)
+	maxRounds := boardScrollRounds
+	if limit > 0 {
+		estimatedRounds := (limit / 10) + 2
+		if estimatedRounds < maxRounds {
+			maxRounds = estimatedRounds
+		}
+	}
+
+	for round := 0; round < maxRounds; round++ {
+		raw, err := evalString(page, js, boardID)
+		if err != nil {
+			return nil, err
+		}
+		if raw == "" {
+			if time.Now().After(deadline) {
+				return nil, fmt.Errorf("页面状态里没有专辑 %s 的笔记列表", boardID)
+			}
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+
+		if err := json.Unmarshal([]byte(raw), &lastFeeds); err != nil {
+			return nil, fmt.Errorf("解析专辑笔记列表失败: %w", err)
+		}
+
+		// 笔记数量已满足 limit，提前终止滚动
+		if limit > 0 && len(lastFeeds.Notes) >= limit {
+			break
+		}
+
+		// 没有更多了
+		if !lastFeeds.HasMore {
+			break
+		}
+
+		// 滚动加载下一屏
+		if err := page.Mouse.Scroll(0, 900, 3); err != nil {
+			return nil, fmt.Errorf("滚动专辑页失败: %w", err)
+		}
+		time.Sleep(700 * time.Millisecond)
+	}
+
+	resultNotes := lastFeeds.Notes
+	hasMore := lastFeeds.HasMore
+	if limit > 0 && len(resultNotes) > limit {
+		resultNotes = resultNotes[:limit]
+		hasMore = true
+	}
+
+	return &BoardFeedsResponse{
+		BoardID:       boardID,
+		HasMore:       hasMore,
+		TotalReturned: len(resultNotes),
+		Feeds:         resultNotes,
+	}, nil
 }
 
 // noteInBoard 查专辑里有没有这条笔记，用来确认移动是否真的生效。

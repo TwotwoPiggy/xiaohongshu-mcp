@@ -153,6 +153,13 @@ type MoveNoteToBoardArgs struct {
 	SourceBoardID string `json:"source_board_id,omitempty" jsonschema:"笔记当前所在专辑ID（可选）。已知时传入可跳过查找，明显更快"`
 }
 
+// ListBoardFeedsArgs 获取专辑内笔记列表参数
+type ListBoardFeedsArgs struct {
+	BoardName string `json:"board_name,omitempty" jsonschema:"专辑名称（例如：'美食探店'，推荐使用，系统会自动查找对应专辑；与 board_id 二选一）"`
+	BoardID   string `json:"board_id,omitempty" jsonschema:"专辑ID（可选，与 board_name 二选一）"`
+	Limit     int    `json:"limit,omitempty" jsonschema:"返回笔记数量上限（可选，例如传 10 表示只查前 10 条；不填或传 0 表示获取该专辑全部笔记）"`
+}
+
 // InitMCPServer 初始化 MCP Server
 func InitMCPServer(appServer *AppServer) *mcp.Server {
 	// 创建 MCP Server
@@ -673,7 +680,28 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 		}),
 	)
 
-	logrus.Infof("Registered %d MCP tools", 23)
+	// 工具 24: 获取专辑内笔记列表
+	mcp.AddTool(server,
+		&mcp.Tool{
+			Name:        "list_board_feeds",
+			Description: "获取指定收藏专辑中的笔记列表。支持通过专辑名称（board_name）或专辑ID（board_id）查询，支持通过 limit 限制返回数量（默认获取全部）",
+			Annotations: &mcp.ToolAnnotations{
+				Title:        "List Board Feeds",
+				ReadOnlyHint: true,
+			},
+		},
+		withPanicRecovery("list_board_feeds", func(ctx context.Context, req *mcp.CallToolRequest, args ListBoardFeedsArgs) (*mcp.CallToolResult, any, error) {
+			argsMap := map[string]interface{}{
+				"board_name": args.BoardName,
+				"board_id":   args.BoardID,
+				"limit":      args.Limit,
+			}
+			result := appServer.handleListBoardFeeds(ctx, argsMap)
+			return convertToMCPResult(result), nil, nil
+		}),
+	)
+
+	logrus.Infof("Registered %d MCP tools", 24)
 }
 
 // convertToMCPResult 将自定义的 MCPToolResult 转换为官方 SDK 的格式

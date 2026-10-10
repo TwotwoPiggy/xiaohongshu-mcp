@@ -546,6 +546,31 @@ func (s *XiaohongshuService) ListBoards(ctx context.Context, userID string) (*Bo
 	return &BoardListResponse{Boards: boards, Count: len(boards)}, nil
 }
 
+// GetBoardFeeds 获取专辑中的笔记列表
+// 支持通过 boardName 或 boardID 定位专辑，limit > 0 时最多返回 limit 条
+func (s *XiaohongshuService) GetBoardFeeds(ctx context.Context, boardName, boardID string, limit int) (*xiaohongshu.BoardFeedsResponse, error) {
+	b := newBrowser()
+	defer b.Close()
+
+	page := b.NewPage()
+	defer page.Close()
+
+	action := xiaohongshu.NewBoardAction(page)
+	targetBoard, err := action.ResolveBoard(ctx, boardName, boardID)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := action.GetBoardFeeds(ctx, targetBoard.ID, limit)
+	if err != nil {
+		return nil, err
+	}
+	if resp.BoardName == "" {
+		resp.BoardName = targetBoard.Name
+	}
+	return resp, nil
+}
+
 // MoveNoteToBoard 将收藏笔记移动到指定专辑
 func (s *XiaohongshuService) MoveNoteToBoard(ctx context.Context, noteID, targetBoardID, sourceBoardID string) (*MoveNoteResult, error) {
 	b := newBrowser()

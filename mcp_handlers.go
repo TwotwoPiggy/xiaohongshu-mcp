@@ -583,6 +583,48 @@ func (s *AppServer) handleListBoards(ctx context.Context, args map[string]interf
 	}
 }
 
+// handleListBoardFeeds 处理获取专辑内的笔记列表
+func (s *AppServer) handleListBoardFeeds(ctx context.Context, args map[string]interface{}) *MCPToolResult {
+	boardName, _ := args["board_name"].(string)
+	boardID, _ := args["board_id"].(string)
+
+	var limit int
+	if rawLimit, ok := args["limit"]; ok {
+		switch v := rawLimit.(type) {
+		case float64:
+			limit = int(v)
+		case int:
+			limit = v
+		case string:
+			if parsed, err := strconv.Atoi(v); err == nil {
+				limit = parsed
+			}
+		}
+	}
+
+	logrus.Infof("MCP: 获取专辑笔记列表 - board_name=%s board_id=%s limit=%d", boardName, boardID, limit)
+
+	result, err := s.xiaohongshuService.GetBoardFeeds(ctx, boardName, boardID, limit)
+	if err != nil {
+		return &MCPToolResult{
+			Content: []MCPContent{{Type: "text", Text: "获取专辑笔记列表失败: " + err.Error()}},
+			IsError: true,
+		}
+	}
+
+	jsonData, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return &MCPToolResult{
+			Content: []MCPContent{{Type: "text", Text: fmt.Sprintf("获取专辑笔记列表成功，但序列化失败: %v", err)}},
+			IsError: true,
+		}
+	}
+
+	return &MCPToolResult{
+		Content: []MCPContent{{Type: "text", Text: string(jsonData)}},
+	}
+}
+
 // handleMoveNoteToBoard 处理移动笔记到专辑
 func (s *AppServer) handleMoveNoteToBoard(ctx context.Context, args map[string]interface{}) *MCPToolResult {
 	noteID, ok := args["note_id"].(string)

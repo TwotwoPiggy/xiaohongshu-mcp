@@ -337,6 +337,30 @@ func (s *AppServer) listBoardsHandler(c *gin.Context) {
 	respondSuccess(c, result, "获取专辑列表成功")
 }
 
+// getBoardFeedsHandler 获取专辑内的笔记列表
+func (s *AppServer) getBoardFeedsHandler(c *gin.Context) {
+	boardName := c.Query("board_name")
+	boardID := c.Query("board_id")
+	limitStr := c.Query("limit")
+
+	var limit int
+	if limitStr != "" {
+		if parsed, err := strconv.Atoi(limitStr); err == nil {
+			limit = parsed
+		}
+	}
+
+	result, err := s.xiaohongshuService.GetBoardFeeds(c.Request.Context(), boardName, boardID, limit)
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "GET_BOARD_FEEDS_FAILED",
+			"获取专辑笔记列表失败", err.Error())
+		return
+	}
+
+	c.Set("account", "ai-report")
+	respondSuccess(c, result, "获取专辑笔记列表成功")
+}
+
 // moveNoteToBoardHandler 将收藏笔记移动到指定专辑
 func (s *AppServer) moveNoteToBoardHandler(c *gin.Context) {
 	var req MoveNoteToBoardRequest

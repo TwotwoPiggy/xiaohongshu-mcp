@@ -68,6 +68,7 @@ func setupRoutes(appServer *AppServer) *gin.Engine {
 
 		// 专辑（board）相关
 		api.GET("/boards", appServer.listBoardsHandler)
+		api.GET("/boards/feeds", appServer.getBoardFeedsHandler)
 		api.POST("/feeds/move_to_board", appServer.moveNoteToBoardHandler)
 		api.POST("/feeds/remove_from_board", appServer.removeNoteFromBoardHandler)
 		api.POST("/boards", appServer.createBoardHandler)
